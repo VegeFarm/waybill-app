@@ -204,8 +204,8 @@ def export_xls(out_df: pd.DataFrame) -> bytes:
 
 
 # ---------------- UI ----------------
-st.set_page_config(page_title="엑셀일괄발송", layout="wide")
-st.title("📦 엑셀일괄발송")
+st.set_page_config(page_title="송장 자동 채우기", layout="wide")
+st.title("📦 1·2번 엑셀 → 3번(발송처리) 자동 채우기")
 
 st.markdown("- 1번 파일은 **비밀번호 0000 고정**으로 열어서 처리합니다.")
 st.markdown("- 3번 결과는 **xls**로 다운로드됩니다.")
@@ -251,4 +251,51 @@ if run:
         st.exception(e)
         st.stop()
 
-    header_idx = find_header_row(raw1, must_have=("구매자명", "수취인명",
+    header_idx = find_header_row(raw1, must_have=("구매자명", "수취인명", "통합배송지", "상품주문번호"))
+    if header_idx < 0:
+        st.error("1번 파일에서 컬럼명 행(구매자명/수취인명/통합배송지/상품주문번호)을 찾지 못했습니다.")
+        st.stop()
+
+    header = raw1.iloc[header_idx].tolist()
+    df1 = raw1.iloc[header_idx + 1:].copy()
+    df1.columns = header
+    df1 = df1.reset_index(drop=True)
+
+    # 2번 read
+    try:
+        df2 = pd.read_excel(f2)
+    except Exception as e:
+        st.error("2번 파일을 읽지 못했습니다.")
+        st.exception(e)
+        st.stop()
+
+    need1 = {"구매자명", "수취인명", "통합배송지", "상품주문번호"}
+    need2 = {"주문자", "수령자", "수령자 주소(상세포함)", "운송장번호"}
+    if not need1.issubset(set(df1.columns)):
+        st.error(f"1번 파일에 필요한 컬럼이 없습니다: {sorted(list(need1 - set(df1.columns)))}")
+        st.stop()
+    if not need2.issubset(set(df2.columns)):
+        st.error(f"2번 파일에 필요한 컬럼이 없습니다: {sorted(list(need2 - set(df2.columns)))}")
+        st.stop()
+
+    out_df, dup_info = build_output(df1, df2)
+
+    st.subheader("미리보기")
+    st.dataframe(out_df.head(30), use_container_width=True)
+
+    miss = (out_df["송장번호"].isna() | (out_df["송장번호"].astype(str).str.strip() == "")).sum()
+    st.write(f"총 {len(out_df)}건 / 송장번호 누락 {miss}건")
+
+    if not dup_info.empty:
+        with st.expander("⚠️ (참고) 같은 주문자/수령자/주소인데 운송장번호가 여러 개인 경우"):
+            st.dataframe(dup_info.head(50), use_container_width=True)
+
+    st.markdown('<div class="result-title">3) 결과 다운로드</div>', unsafe_allow_html=True)
+
+    xls_bytes = export_xls(out_df)
+    st.download_button(
+        "✅ 3번(발송처리) 엑셀 다운로드",
+        data=xls_bytes,
+        file_name="3_발송처리_자동채움.xls",
+        mime="application/vnd.ms-excel",
+    )
