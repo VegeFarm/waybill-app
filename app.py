@@ -5,9 +5,6 @@ from typing import Optional, Tuple, Dict
 
 import pandas as pd
 import streamlit as st
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment
-from openpyxl.worksheet.datavalidation import DataValidation
 
 # -------------------------
 # 고정 비밀번호 (요청사항)
@@ -150,7 +147,6 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
         .sort_values("운송장번호_종류수", ascending=False)
     )
 
-    # 과학표기 방지 변환(값 보존)
     df1["_상품주문번호_plain"] = df1[col_po].apply(to_plain_number_str)
     df1["_송장번호_plain"] = df1["송장번호"].apply(to_plain_tracking_str)
 
@@ -165,34 +161,42 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
     return out, dup_info
 
 
-def export_excel(out_df: pd.DataFrame) -> bytes:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "발송처리"
+def export_xls(out_df: pd.DataFrame) -> bytes:
+    """
+    .xls 생성 (xlwt)
+    - .xls는 드롭다운(DataValidation) 강제 적용이 제한적이라 B열은 값만 '택배'로 채움
+    - A/D는 문자열로 써서 과학표기 방지
+    """
+    import xlwt
 
-    ws.append(list(out_df.columns))
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("발송처리")
 
-    for row in out_df.itertuples(index=False):
-        ws.append(list(row))
+    header_style = xlwt.easyxf("font: bold on; align: horiz center, vert center;")
+    center_style = xlwt.easyxf("align: horiz center, vert center;")
+    left_style = xlwt.easyxf("align: horiz left, vert center;")
 
-    # ✅ A/D열(상품주문번호/송장번호) 서식: 일반(General)
-    for r in range(2, len(out_df) + 2):
-        ws[f"A{r}"].number_format = "General"
-        ws[f"D{r}"].number_format = "General"
+    # 컬럼 폭(대략)
+    col_widths = [24, 10, 16, 32]
+    for c, w in enumerate(col_widths):
+        ws.col(c).width = int(w * 256)
 
-    # ✅ B열(배송방법) 드롭다운 고정: 택배,등기,소포
-    dv = DataValidation(type="list", formula1='"택배,등기,소포"', allow_blank=True)
-    ws.add_data_validation(dv)
-    dv.add(f"B2:B{len(out_df) + 1}")
+    # 헤더
+    for c, name in enumerate(out_df.columns):
+        ws.write(0, c, name, header_style)
 
-    ws.freeze_panes = "A2"
-    ws.column_dimensions["A"].width = 24
-    ws.column_dimensions["B"].width = 10
-    ws.column_dimensions["C"].width = 16
-    ws.column_dimensions["D"].width = 32
+    # 데이터
+    for r, row in enumerate(out_df.itertuples(index=False), start=1):
+        vals = list(row)
+        for c, v in enumerate(vals):
+            v_str = "" if v is None else str(v)
+
+            # A(상품주문번호), D(송장번호) → 문자열로 써서 E+11 방지
+            if c in (0, 3):
+                ws.write(r, c, v_str, left_style)
+            # B,C는 가운데 정렬
+            else:
+                ws.write(r, c, v_str, center_style)
 
     bio = io.BytesIO()
     wb.save(bio)
@@ -204,9 +208,8 @@ st.set_page_config(page_title="엑셀일괄발송", layout="wide")
 st.title("📦 엑셀일괄발송")
 
 st.markdown("- 1번 파일은 **비밀번호 0000 고정**으로 열어서 처리합니다.")
-st.markdown("- 3번 결과는 **xlsx**로 다운로드됩니다. (엑셀에서 바로 업로드 가능)")
+st.markdown("- 3번 결과는 **xls**로 다운로드됩니다.")
 
-# ✅ 글씨 크기/여백 CSS
 st.markdown("""
 <style>
 .upload-title { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
@@ -248,53 +251,4 @@ if run:
         st.exception(e)
         st.stop()
 
-    # 1번 헤더 행 찾기
-    header_idx = find_header_row(raw1, must_have=("구매자명", "수취인명", "통합배송지", "상품주문번호"))
-    if header_idx < 0:
-        st.error("1번 파일에서 컬럼명 행(구매자명/수취인명/통합배송지/상품주문번호)을 찾지 못했습니다.")
-        st.stop()
-
-    header = raw1.iloc[header_idx].tolist()
-    df1 = raw1.iloc[header_idx + 1:].copy()
-    df1.columns = header
-    df1 = df1.reset_index(drop=True)
-
-    # 2번 read
-    try:
-        df2 = pd.read_excel(f2)
-    except Exception as e:
-        st.error("2번 파일을 읽지 못했습니다.")
-        st.exception(e)
-        st.stop()
-
-    # 기본 컬럼 검사
-    need1 = {"구매자명", "수취인명", "통합배송지", "상품주문번호"}
-    need2 = {"주문자", "수령자", "수령자 주소(상세포함)", "운송장번호"}
-    if not need1.issubset(set(df1.columns)):
-        st.error(f"1번 파일에 필요한 컬럼이 없습니다: {sorted(list(need1 - set(df1.columns)))}")
-        st.stop()
-    if not need2.issubset(set(df2.columns)):
-        st.error(f"2번 파일에 필요한 컬럼이 없습니다: {sorted(list(need2 - set(df2.columns)))}")
-        st.stop()
-
-    out_df, dup_info = build_output(df1, df2)
-
-    st.subheader("미리보기")
-    st.dataframe(out_df.head(30), use_container_width=True)
-
-    miss = (out_df["송장번호"].isna() | (out_df["송장번호"].astype(str).str.strip() == "")).sum()
-    st.write(f"총 {len(out_df)}건 / 송장번호 누락 {miss}건")
-
-    if not dup_info.empty:
-        with st.expander("⚠️ (참고) 같은 주문자/수령자/주소인데 운송장번호가 여러 개인 경우"):
-            st.dataframe(dup_info.head(50), use_container_width=True)
-
-    st.markdown('<div class="result-title">3) 결과 다운로드</div>', unsafe_allow_html=True)
-
-    excel_bytes = export_excel(out_df)
-    st.download_button(
-        "✅ 3번(발송처리) 엑셀 다운로드",
-        data=excel_bytes,
-        file_name="3_발송처리_자동채움.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    header_idx = find_header_row(raw1, must_have=("구매자명", "수취인명",
