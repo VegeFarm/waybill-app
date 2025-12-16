@@ -9,7 +9,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from openpyxl.worksheet.datavalidation import DataValidation
 
-# 암호 고정(요청사항)
+# -------------------------
+# 고정 비밀번호 (요청사항)
+# -------------------------
 FIXED_PASSWORD = "0000"
 
 ROMAN_MAP = str.maketrans({
@@ -79,7 +81,7 @@ def to_plain_tracking_str(x) -> str:
 
 def decrypt_office_excel(file_bytes: bytes, password: str) -> io.BytesIO:
     """암호화된 스마트스토어 엑셀(xlsx)을 해제해서 BytesIO로 반환"""
-    import msoffcrypto  # requirements.txt에 포함
+    import msoffcrypto  # requirements.txt에 포함 필요
 
     decrypted = io.BytesIO()
     office_file = msoffcrypto.OfficeFile(io.BytesIO(file_bytes))
@@ -131,7 +133,7 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
     df1 = df1.copy()
     df2 = df2.copy()
 
-    # "상품주문번호가 달라도" 주문자/수령자/주소가 같으면 같은 송장번호로 묶기 위한 key
+    # 주문자/수령자/주소가 같으면 같은 송장번호로 묶기 위한 key
     df1["__key"] = df1[col_buyer].map(norm_text) + "|" + df1[col_recv].map(norm_text) + "|" + df1[col_addr].map(norm_text)
     df2["__key"] = df2[col2_buyer].map(norm_text) + "|" + df2[col2_recv].map(norm_text) + "|" + df2[col2_addr].map(norm_text)
 
@@ -148,7 +150,7 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
         .sort_values("운송장번호_종류수", ascending=False)
     )
 
-    # 과학표기 방지 변환
+    # 과학표기 방지 변환(값 보존)
     df1["_상품주문번호_plain"] = df1[col_po].apply(to_plain_number_str)
     df1["_송장번호_plain"] = df1["송장번호"].apply(to_plain_tracking_str)
 
@@ -168,17 +170,15 @@ def export_excel(out_df: pd.DataFrame) -> bytes:
     ws = wb.active
     ws.title = "발송처리"
 
-    # header
     ws.append(list(out_df.columns))
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # data rows
     for row in out_df.itertuples(index=False):
         ws.append(list(row))
 
-    # ✅ A/D열(상품주문번호/송장번호) 서식: "일반(General)" 로
+    # ✅ A/D열(상품주문번호/송장번호) 서식: 일반(General)
     for r in range(2, len(out_df) + 2):
         ws[f"A{r}"].number_format = "General"
         ws[f"D{r}"].number_format = "General"
@@ -188,7 +188,6 @@ def export_excel(out_df: pd.DataFrame) -> bytes:
     ws.add_data_validation(dv)
     dv.add(f"B2:B{len(out_df) + 1}")
 
-    # 보기 편하게
     ws.freeze_panes = "A2"
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 10
@@ -207,25 +206,35 @@ st.title("📦 1·2번 엑셀 → 3번(발송처리) 자동 채우기")
 st.markdown("- 1번 파일은 **비밀번호 0000 고정**으로 열어서 처리합니다.")
 st.markdown("- 3번 결과는 **xlsx**로 다운로드됩니다. (엑셀에서 바로 업로드 가능)")
 
-# ✅ 글씨 크기 + 간격용 CSS
+# ✅ 글씨 크기/여백 CSS
 st.markdown("""
 <style>
-.upload-title { font-size: 20px; font-weight: 700; }
-.result-title { font-size: 22px; font-weight: 800; margin-top: 10px; }
+.upload-title { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
+.result-title { font-size: 22px; font-weight: 800; margin-top: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
-c1, c2 = st.columns(2)
+# ✅ 1) 업로드 (제목 바로 밑에 Drag&Drop)
+st.markdown('<div class="upload-title">1) 스마트스토어 엑셀(비번0000)</div>', unsafe_allow_html=True)
+f1 = st.file_uploader(
+    label="스마트스토어 엑셀 업로드",
+    type=["xlsx"],
+    key="smartstore_file",
+    label_visibility="collapsed",
+)
 
-with c1:
-    st.markdown('<div class="upload-title">1) 스마트스토어 엑셀(비번0000)</div>', unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)  # 한 칸 띄우기
-    f1 = st.file_uploader("", type=["xlsx"], key="smartstore_file")
+# ✅ 한 칸 띄우고 2) 업로드
+st.markdown("<br>", unsafe_allow_html=True)
 
-with c2:
-    st.markdown('<div class="upload-title">2) 운송장/출고 엑셀</div>', unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)  # 한 칸 띄우기
-    f2 = st.file_uploader("", type=["xlsx", "xls"], key="tracking_file")
+st.markdown('<div class="upload-title">2) 운송장/출고 엑셀</div>', unsafe_allow_html=True)
+f2 = st.file_uploader(
+    label="운송장/출고 엑셀 업로드",
+    type=["xlsx", "xls"],
+    key="tracking_file",
+    label_visibility="collapsed",
+)
+
+st.markdown("<br>", unsafe_allow_html=True)
 
 run = st.button("자동 채우기", type="primary", disabled=(f1 is None or f2 is None))
 
