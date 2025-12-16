@@ -1,6 +1,7 @@
 streamlit
 pandas
-openpyxl
 msoffcrypto-tool
 xlrd
+xlwt
+openpyxl
 
