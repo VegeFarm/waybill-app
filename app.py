@@ -200,7 +200,7 @@ def export_excel(out_df: pd.DataFrame) -> bytes:
 
 
 # ---------------- UI ----------------
-st.set_page_config(page_title="송장 자동 채우기", layout="wide")
+st.set_page_config(page_title="엑셀일괄발송", layout="wide")
 st.title("📦 1·2번 엑셀 → 3번(발송처리) 자동 채우기")
 
 st.markdown("- 1번 파일은 **비밀번호 0000 고정**으로 열어서 처리합니다.")
