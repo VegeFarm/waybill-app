@@ -294,7 +294,7 @@ if run:
 
     xls_bytes = export_xls(out_df)
     st.download_button(
-        "✅ 3번(발송처리) 엑셀 다운로드",
+        "✅ 일괄발송 엑셀 다운로드",
         data=xls_bytes,
         file_name="송장일괄발송.xls",
         mime="application/vnd.ms-excel",
