@@ -5,420 +5,254 @@ from typing import Optional, Tuple, Dict
 
 import pandas as pd
 import streamlit as st
-
-# Excel IO
-import openpyxl
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
+from openpyxl.worksheet.datavalidation import DataValidation
 
-# Encrypted xlsx support
-import msoffcrypto
-
-
+# 암호 고정(요청사항)
 FIXED_PASSWORD = "0000"
-DELIVERY_METHODS = ["택배", "등기", "소포"]
-DEFAULT_DELIVERY_METHOD = "택배"
 
+ROMAN_MAP = str.maketrans({
+    "Ⅰ":"1","Ⅱ":"2","Ⅲ":"3","Ⅳ":"4","Ⅴ":"5","Ⅵ":"6","Ⅶ":"7","Ⅷ":"8","Ⅸ":"9","Ⅹ":"10",
+    "ⅰ":"1","ⅱ":"2","ⅲ":"3","ⅳ":"4","ⅴ":"5","ⅵ":"6","ⅶ":"7","ⅷ":"8","ⅸ":"9","ⅹ":"10",
+})
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", "", str(s or "")).strip().lower()
-
-
-def find_col(df: pd.DataFrame, keywords) -> Optional[str]:
-    cols = list(df.columns)
-    norm_map = {_norm(c): c for c in cols}
-    for kw in keywords:
-        kw_n = _norm(kw)
-        for n, orig in norm_map.items():
-            if kw_n and kw_n in n:
-                return orig
-    return None
-
-
-def to_plain_str(v) -> str:
-    """
-    Convert tracking/order numbers that may arrive as:
-      - float (e.g., 3.13936e+11)
-      - scientific string (e.g., "3.13936E+11")
-      - int
-      - string with hyphens
-    into a plain digit string (or original string if non-numeric).
-    """
-    if v is None:
+def norm_text(s) -> str:
+    """공백/특수문자 제거 + 로마숫자(Ⅱ 등) 숫자로 변환."""
+    if s is None or (isinstance(s, float) and pd.isna(s)):
         return ""
-    if isinstance(v, str):
-        s = v.strip()
-        if s == "" or s.lower() in {"nan", "none"}:
-            return ""
-        # keep hyphenated tracking numbers as-is
-        if "-" in s:
-            return s
-        # scientific notation in string?
-        if re.fullmatch(r"[+-]?\d+(\.\d+)?[eE][+-]?\d+", s):
-            try:
-                d = Decimal(s)
-                # quantize to whole number
-                return format(d.quantize(Decimal(1)), "f").split(".")[0]
-            except (InvalidOperation, ValueError):
-                return s
-        # digits-only
-        if re.fullmatch(r"\d+", s):
-            return s
-        # digits with .0
-        if re.fullmatch(r"\d+\.0+", s):
-            return s.split(".")[0]
-        return s
+    s = str(s).strip().translate(ROMAN_MAP)
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"[^0-9A-Za-z가-힣]", "", s)
+    return s
 
-    # numeric types
+def to_plain_number_str(x) -> str:
+    """3.13936E+11 같은 표기를 엑셀/표에서 '313936000000'처럼 보이게 변환."""
+    if x is None:
+        return ""
     try:
-        # pandas may give numpy types
-        if pd.isna(v):
+        if isinstance(x, float) and pd.isna(x):
             return ""
     except Exception:
         pass
+    s = str(x).strip()
+    if s == "" or s.lower() == "nan":
+        return ""
+    s = s.replace(",", "")
+    # '123.0' 형태
+    if re.fullmatch(r"-?\d+\.0+", s):
+        return s.split(".")[0]
+    try:
+        d = Decimal(s)
+        if d == d.to_integral():
+            return format(d.to_integral(), "f")
+        plain = format(d, "f").rstrip("0").rstrip(".")
+        return plain
+    except (InvalidOperation, ValueError):
+        return s
 
-    if isinstance(v, (int, )):
-        return str(v)
-
-    if isinstance(v, (float, )):
-        if math.isnan(v) or math.isinf(v):
+def to_plain_tracking_str(x) -> str:
+    """운송장번호: '-' 있으면 그대로, 숫자면 과학표기 방지 변환."""
+    if x is None:
+        return ""
+    try:
+        if isinstance(x, float) and pd.isna(x):
             return ""
-        # Convert via Decimal using string representation to avoid binary float artifacts
-        try:
-            d = Decimal(str(v))
-            # if looks like integer
-            return format(d.quantize(Decimal(1)), "f").split(".")[0]
-        except Exception:
-            # fallback
-            return str(int(v))
-
-    # fallback
-    return str(v).strip()
+    except Exception:
+        pass
+    s = str(x).strip()
+    if s == "" or s.lower() == "nan":
+        return ""
+    if "-" in s:
+        return s
+    return to_plain_number_str(s)
 
 
-def read_encrypted_xlsx(uploaded_file, password: str) -> pd.DataFrame:
-    """
-    Decrypt an encrypted Excel file (xlsx) using msoffcrypto and return DataFrame.
-    """
-    raw = uploaded_file.read()
-    office_file = msoffcrypto.OfficeFile(io.BytesIO(raw))
-    office_file.load_key(password=password)
+def decrypt_office_excel(file_bytes: bytes, password: str) -> io.BytesIO:
+    import msoffcrypto  # requirements.txt에 포함
     decrypted = io.BytesIO()
+    office_file = msoffcrypto.OfficeFile(io.BytesIO(file_bytes))
+    office_file.load_key(password=password)
     office_file.decrypt(decrypted)
     decrypted.seek(0)
-    return pd.read_excel(decrypted, dtype=str)
+    return decrypted
 
+def find_header_row(df: pd.DataFrame, must_have: Tuple[str, ...], max_scan: int = 30) -> int:
+    """header=None로 읽은 df에서 컬럼명 행을 찾는다."""
+    scan = min(max_scan, len(df))
+    for i in range(scan):
+        row = df.iloc[i].astype(str).tolist()
+        if all(any(m in cell for cell in row) for m in must_have):
+            return i
+    return -1
 
-def read_excel_any(uploaded_file) -> pd.DataFrame:
-    """
-    Read xlsx or xls. Prefer dtype=str to keep identifiers stable.
-    """
-    name = (uploaded_file.name or "").lower()
-    data = uploaded_file.read()
-    bio = io.BytesIO(data)
-    if name.endswith(".xls"):
-        # xlrd required for .xls
-        return pd.read_excel(bio, dtype=str, engine="xlrd")
-    return pd.read_excel(bio, dtype=str)
+def choose_tracking(series: pd.Series) -> Optional[str]:
+    s = series.dropna().astype(str)
+    if s.empty:
+        return None
+    vc = s.value_counts()
+    top = vc.max()
+    candidates = vc[vc == top].index.tolist()
+    if len(candidates) == 1:
+        return candidates[0]
+    # tie → 원래 등장 순서로 먼저 나온 값
+    for v in s:
+        if v in candidates:
+            return v
+    return candidates[0]
 
+def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    # 1번에서 필요한 컬럼
+    col_buyer = "구매자명"
+    col_recv  = "수취인명"
+    col_addr  = "통합배송지"
+    col_po    = "상품주문번호"
 
-def make_address(df: pd.DataFrame) -> Tuple[pd.Series, Dict[str, str]]:
-    """
-    Build a best-effort address string from common SmartStore columns.
-    Returns (address_series, debug mapping)
-    """
-    mapping = {}
-    base = find_col(df, ["주소", "배송지", "수령자주소", "수령주소", "배송주소"])
-    detail = find_col(df, ["상세주소", "주소2", "배송지상세", "상세"])
-    zipc = find_col(df, ["우편번호", "우편"])
+    # 2번에서 필요한 컬럼
+    col2_buyer = "주문자"
+    col2_recv  = "수령자"
+    col2_addr  = "수령자 주소(상세포함)"
+    col2_track = "운송장번호"
 
-    mapping["addr_base"] = base or ""
-    mapping["addr_detail"] = detail or ""
-    mapping["zip"] = zipc or ""
+    # key 만들기
+    df1 = df1.copy()
+    df2 = df2.copy()
 
-    addr = df[base].fillna("").astype(str) if base else pd.Series([""] * len(df))
-    if detail:
-        addr = (addr.str.strip() + " " + df[detail].fillna("").astype(str).str.strip()).str.strip()
-    if zipc:
-        z = df[zipc].fillna("").astype(str).str.strip()
-        # if zip exists, prefix in brackets
-        addr = (z.where(z != "", "")).map(lambda x: f"[{x}] " if x else "") + addr
-    return addr, mapping
+    df1["__key"] = df1[col_buyer].map(norm_text) + "|" + df1[col_recv].map(norm_text) + "|" + df1[col_addr].map(norm_text)
+    df2["__key"] = df2[col2_buyer].map(norm_text) + "|" + df2[col2_recv].map(norm_text) + "|" + df2[col2_addr].map(norm_text)
 
+    # key → 운송장번호(중복 시 최빈값/타이브레이크)
+    map_track: Dict[str, Optional[str]] = df2.groupby("__key")[col2_track].apply(choose_tracking).to_dict()
 
-def build_output(orders_df: pd.DataFrame, ship_df: pd.DataFrame, template_df: pd.DataFrame) -> pd.DataFrame:
-    # ---- Identify essential columns in 1 (orders) ----
-    o_order = find_col(orders_df, ["상품주문번호", "주문번호"])
-    o_buyer = find_col(orders_df, ["주문자", "구매자"])
-    o_recv = find_col(orders_df, ["수령자", "받는사람", "수취인"])
-    addr_series, _addr_map = make_address(orders_df)
+    df1["송장번호"] = df1["__key"].map(map_track)
 
-    if not o_order:
-        raise ValueError("1번(스마트스토어) 파일에서 '상품주문번호' 컬럼을 찾지 못했어요.")
-    if not o_buyer:
-        raise ValueError("1번(스마트스토어) 파일에서 '주문자' 컬럼을 찾지 못했어요.")
-    if not o_recv:
-        raise ValueError("1번(스마트스토어) 파일에서 '수령자' 컬럼을 찾지 못했어요.")
-
-    od = orders_df.copy()
-    od["_order_no"] = od[o_order].map(to_plain_str)
-    od["_buyer"] = od[o_buyer].fillna("").astype(str).str.strip()
-    od["_recv"] = od[o_recv].fillna("").astype(str).str.strip()
-    od["_addr"] = addr_series.fillna("").astype(str).str.strip()
-
-    # ---- Identify essential columns in 2 (shipping) ----
-    s_order = find_col(ship_df, ["상품주문번호", "주문번호"])
-    s_track = find_col(ship_df, ["운송장번호", "송장번호", "운송장", "송장"])
-    if not s_order or not s_track:
-        raise ValueError("2번(운송장/출고) 파일에서 '상품주문번호' 또는 '운송장번호/송장번호' 컬럼을 찾지 못했어요.")
-
-    sd = ship_df.copy()
-    sd["_order_no"] = sd[s_order].map(to_plain_str)
-    sd["_track"] = sd[s_track].map(to_plain_str)
-
-    order_to_track: Dict[str, str] = {}
-    for _, r in sd.iterrows():
-        ono = (r.get("_order_no") or "").strip()
-        trk = (r.get("_track") or "").strip()
-        if ono and trk and ono not in order_to_track:
-            order_to_track[ono] = trk
-
-    od["_track_by_order"] = od["_order_no"].map(lambda x: order_to_track.get(x, ""))
-
-    # ---- Group rule: same buyer/receiver/address -> same tracking number ----
-    od["_group_key"] = (od["_buyer"] + "||" + od["_recv"] + "||" + od["_addr"])
-    # choose first non-empty tracking within group
-    group_track = (
-        od.sort_values(by=["_order_no"])
-          .groupby("_group_key")["_track_by_order"]
-          .apply(lambda s: next((x for x in s.tolist() if x), ""))
-          .to_dict()
-    )
-    od["_group_track"] = od["_group_key"].map(lambda k: group_track.get(k, ""))
-
-    # ---- Prepare a lookup from order_no -> (buyer, recv, addr, group_track) ----
-    lookup = (
-        od.drop_duplicates(subset=["_order_no"])
-          .set_index("_order_no")[["_buyer", "_recv", "_addr", "_group_track"]]
+    # 참고용: 같은 key에서 운송장번호가 여러 개인 경우
+    dup_info = (
+        df2.groupby("__key")[col2_track]
+        .nunique(dropna=True)
+        .reset_index(name="운송장번호_종류수")
+        .query("운송장번호_종류수 > 1")
+        .sort_values("운송장번호_종류수", ascending=False)
     )
 
-    # ---- Apply to template (3) ----
-    out = template_df.copy()
+    # 3번 템플릿 형태로 출력
+    df1["_상품주문번호_plain"] = df1[col_po].apply(to_plain_number_str)
+    df1["_송장번호_plain"] = df1["송장번호"].apply(to_plain_tracking_str)
 
-    t_order = find_col(out, ["상품주문번호", "주문번호"])
-    if not t_order:
-        raise ValueError("3번(템플릿) 파일에서 '상품주문번호' 컬럼을 찾지 못했어요.")
+    # 3번 템플릿 형태로 출력
+    out = pd.DataFrame({
+        "상품주문번호": df1["_상품주문번호_plain"],
+        "배송방법": ["택배"] * len(df1),
+        "택배사": df1["_송장번호_plain"].apply(lambda x: "컬리넥스트마일" if "-" in str(x) else ("롯데택배" if str(x).strip() else "")),
+        "송장번호": df1["_송장번호_plain"],
+    })
+    return out, dup_info
 
-    out["_order_no"] = out[t_order].map(to_plain_str)
-    merged = out.merge(lookup, how="left", left_on="_order_no", right_index=True)
-
-    # Fill common fields if present
-    t_buyer = find_col(out, ["주문자", "구매자"])
-    t_recv = find_col(out, ["수령자", "수취인", "받는사람"])
-    t_addr = find_col(out, ["주소", "배송지", "수령자주소", "배송주소"])
-    t_detail = find_col(out, ["상세주소", "주소2", "배송지상세", "상세"])
-    t_track = find_col(out, ["송장번호", "운송장번호", "운송장", "송장"])
-    t_method = find_col(out, ["배송방법"])
-    t_courier = find_col(out, ["택배사", "택배사명", "배송사", "운송사"])
-
-    # Buyer/receiver/address
-    if t_buyer:
-        merged[t_buyer] = merged["_buyer"].fillna(merged.get(t_buyer))
-    if t_recv:
-        merged[t_recv] = merged["_recv"].fillna(merged.get(t_recv))
-    if t_addr:
-        # if template has separate detail, keep it; otherwise write full address into addr col
-        if t_detail and t_addr:
-            # best effort: split into base + detail by last space if detail empty
-            full = merged["_addr"].fillna("")
-            base = full
-            det = ""
-            # only fill base if present
-            merged[t_addr] = base.where(base != "", merged.get(t_addr))
-            # if detail col exists, leave it unless empty
-            if t_detail:
-                merged[t_detail] = merged.get(t_detail).fillna(det)
-        else:
-            merged[t_addr] = merged["_addr"].where(merged["_addr"].fillna("") != "", merged.get(t_addr))
-
-    # Tracking number
-    tracking = merged["_group_track"].fillna("")
-    if t_track:
-        merged[t_track] = tracking.where(tracking != "", merged.get(t_track))
-    else:
-        # if no tracking column, create one
-        merged["송장번호"] = tracking
-
-    # Delivery method (B col request)
-    if t_method:
-        merged[t_method] = DEFAULT_DELIVERY_METHOD
-    else:
-        merged["배송방법"] = DEFAULT_DELIVERY_METHOD
-
-    # Courier (C col request)
-    courier_val = tracking.map(lambda x: "컬리넥스트마일" if ("-" in str(x)) else ("롯데택배" if str(x).strip() else ""))
-    if t_courier:
-        merged[t_courier] = courier_val.where(courier_val != "", merged.get(t_courier))
-    else:
-        merged["택배사"] = courier_val
-
-    # Clean helper columns
-    for c in ["_order_no", "_buyer", "_recv", "_addr", "_group_track"]:
-        if c in merged.columns:
-            pass
-    merged = merged.drop(columns=[c for c in merged.columns if c.startswith("_")], errors="ignore")
-
-    return merged
-
-
-def df_to_workbook(df: pd.DataFrame, delivery_col_name: str, order_col_name: str, track_col_name: str) -> openpyxl.Workbook:
-    wb = openpyxl.Workbook()
+def export_excel(out_df: pd.DataFrame) -> bytes:
+    wb = Workbook()
     ws = wb.active
     ws.title = "발송처리"
 
-    header_font = Font(bold=True)
-    center = Alignment(vertical="center")
+    # header
+    ws.append(list(out_df.columns))
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # Write header
-    ws.append(list(df.columns))
-    for j in range(1, len(df.columns) + 1):
-        cell = ws.cell(row=1, column=j)
-        cell.font = header_font
-        cell.alignment = center
-
-    # Write rows
-    for row in df.itertuples(index=False, name=None):
+    # data rows
+    for row in out_df.itertuples(index=False):
         ws.append(list(row))
 
-    # Auto width
-    for j, col in enumerate(df.columns, start=1):
-        max_len = max([len(str(col))] + [len(str(v)) if v is not None else 0 for v in df[col].tolist()[:200]])
-        ws.column_dimensions[get_column_letter(j)].width = min(max(10, max_len + 2), 40)
+        # A/D열(상품주문번호/송장번호) 텍스트로 고정 → 과학표기(3.1E+11) 방지
+    for r in range(2, len(out_df) + 2):
+        ws[f"A{r}"].number_format = "@"
+        ws[f"D{r}"].number_format = "@"
 
-    # Force number formats to "General" but keep values as strings (prevents scientific notation)
-    col_to_idx = {c: i+1 for i, c in enumerate(df.columns)}
-    for c_name in [order_col_name, track_col_name]:
-        if c_name and c_name in col_to_idx:
-            idx = col_to_idx[c_name]
-            for r in range(2, ws.max_row + 1):
-                ws.cell(row=r, column=idx).number_format = "General"
+# B열(배송방법) 드롭다운 고정: 택배,등기,소포
+    dv = DataValidation(type="list", formula1='"택배,등기,소포"', allow_blank=True)
+    ws.add_data_validation(dv)
+    dv.add(f"B2:B{len(out_df)+1}")
 
-    # Add dropdown validation for delivery method column
-    if delivery_col_name and delivery_col_name in col_to_idx:
-        idx = col_to_idx[delivery_col_name]
-        dv = DataValidation(
-            type="list",
-            formula1='"{}"'.format(",".join(DELIVERY_METHODS)),
-            allow_blank=True,
-            showDropDown=True
-        )
-        ws.add_data_validation(dv)
-        dv.add(f"{get_column_letter(idx)}2:{get_column_letter(idx)}{ws.max_row}")
+    # 보기 편하게
+    ws.freeze_panes = "A2"
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 10
+    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["D"].width = 32
 
-    return wb
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
 
+st.set_page_config(page_title="송장 자동 채우기", layout="wide")
+st.title("📦 1·2번 엑셀 → 3번(발송처리) 자동 채우기")
 
-# -----------------------------
-# UI
-# -----------------------------
-st.set_page_config(page_title="발송처리 자동 채움", layout="wide")
+st.markdown("- 1번 파일은 **비밀번호 0000 고정**으로 열어서 처리합니다.")
+st.markdown("- 3번 결과는 **xlsx**로 다운로드됩니다. (엑셀에서 바로 업로드 가능)")
 
-st.title("📦 발송처리(3번) 자동 채움")
+c1, c2 = st.columns(2)
+with c1:
+    f1 = st.file_uploader("1) 스마트스토어 엑셀(비번 0000)", type=["xlsx", "xls"])
+with c2:
+    f2 = st.file_uploader("2) 운송장/출고 엑셀", type=["xlsx", "xls"])
 
-# Section 1
-st.markdown(
-    "<div style='font-size:20px; font-weight:700;'>스마트스토어 엑셀(비번0000)</div>",
-    unsafe_allow_html=True
-)
-st.write("")  # one line spacing
-smartstore_file = st.file_uploader(
-    label="",
-    type=["xlsx"],
-    accept_multiple_files=False,
-    key="smartstore",
-    label_visibility="collapsed",
-)
-
-st.write("")  # one line spacing
-
-# Section 2
-st.markdown(
-    "<div style='font-size:20px; font-weight:700;'>운송장/출고 엑셀</div>",
-    unsafe_allow_html=True
-)
-st.write("")  # one line spacing
-shipping_file = st.file_uploader(
-    label="",
-    type=["xlsx", "xls"],
-    accept_multiple_files=False,
-    key="shipping",
-    label_visibility="collapsed",
-)
-
-st.write("")  # spacing
-
-# Template uploader (3)
-st.markdown(
-    "<div style='font-size:18px; font-weight:700;'>발송처리 템플릿(3번 엑셀)</div>",
-    unsafe_allow_html=True
-)
-template_file = st.file_uploader(
-    label="",
-    type=["xlsx", "xls"],
-    accept_multiple_files=False,
-    key="template",
-    label_visibility="collapsed",
-)
-
-st.write("")
-
-run = st.button("✅ 자동 채움 실행", type="primary", use_container_width=True)
+run = st.button("자동 채우기", type="primary", disabled=(f1 is None or f2 is None))
 
 if run:
-    if not smartstore_file or not shipping_file or not template_file:
-        st.error("1번(스마트스토어), 2번(운송장/출고), 3번(템플릿) 파일을 모두 올려줘.")
+    # 1번 decrypt + read
+    try:
+        decrypted = decrypt_office_excel(f1.read(), FIXED_PASSWORD)
+        raw1 = pd.read_excel(decrypted, header=None)
+    except Exception as e:
+        st.error("1번 파일을 열지 못했습니다. 비밀번호(0000) 또는 파일 형식을 확인해 주세요.")
+        st.exception(e)
         st.stop()
 
+    # 1번 헤더 행 찾기
+    header_idx = find_header_row(raw1, must_have=("구매자명", "수취인명", "통합배송지", "상품주문번호"))
+    if header_idx < 0:
+        st.error("1번 파일에서 컬럼명 행(구매자명/수취인명/통합배송지/상품주문번호)을 찾지 못했습니다.")
+        st.stop()
+
+    header = raw1.iloc[header_idx].tolist()
+    df1 = raw1.iloc[header_idx + 1:].copy()
+    df1.columns = header
+    df1 = df1.reset_index(drop=True)
+
+    # 2번 read
     try:
-        with st.spinner("1번(암호화 엑셀) 해독 중..."):
-            orders_df = read_encrypted_xlsx(smartstore_file, FIXED_PASSWORD)
-
-        with st.spinner("2번/3번 엑셀 읽는 중..."):
-            ship_df = read_excel_any(shipping_file)
-            template_df = read_excel_any(template_file)
-
-        with st.spinner("데이터 매칭 & 채우는 중..."):
-            out_df = build_output(orders_df, ship_df, template_df)
-
-        # Identify key columns in output for formatting/validation
-        delivery_col = find_col(out_df, ["배송방법"]) or "배송방법"
-        order_col = find_col(out_df, ["상품주문번호", "주문번호"]) or "상품주문번호"
-        track_col = find_col(out_df, ["송장번호", "운송장번호", "운송장", "송장"]) or "송장번호"
-
-        wb = df_to_workbook(out_df, delivery_col, order_col, track_col)
-        bio = io.BytesIO()
-        wb.save(bio)
-        bio.seek(0)
-
-        # Result header: a bit larger than the ones above
-        st.markdown(
-            "<div style='font-size:24px; font-weight:800; margin-top:8px;'>3번 결과</div>",
-            unsafe_allow_html=True
-        )
-
-        st.dataframe(out_df, use_container_width=True, hide_index=True)
-
-        st.download_button(
-            "⬇️ 3번 결과 엑셀 다운로드",
-            data=bio.getvalue(),
-            file_name="3_발송처리_자동채움.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-
+        df2 = pd.read_excel(f2)
     except Exception as e:
+        st.error("2번 파일을 읽지 못했습니다.")
         st.exception(e)
+        st.stop()
+
+    # 기본 컬럼 검사
+    need1 = {"구매자명", "수취인명", "통합배송지", "상품주문번호"}
+    need2 = {"주문자", "수령자", "수령자 주소(상세포함)", "운송장번호"}
+    if not need1.issubset(set(df1.columns)):
+        st.error(f"1번 파일에 필요한 컬럼이 없습니다: {sorted(list(need1 - set(df1.columns)))}")
+        st.stop()
+    if not need2.issubset(set(df2.columns)):
+        st.error(f"2번 파일에 필요한 컬럼이 없습니다: {sorted(list(need2 - set(df2.columns)))}")
+        st.stop()
+
+    out_df, dup_info = build_output(df1, df2)
+
+    st.subheader("미리보기")
+    st.dataframe(out_df.head(30), use_container_width=True)
+
+    miss = (out_df["송장번호"].isna() | (out_df["송장번호"].astype(str).str.strip() == "")).sum()
+    st.write(f"총 {len(out_df)}건 / 송장번호 누락 {miss}건")
+
+    if not dup_info.empty:
+        with st.expander("⚠️ (참고) 같은 주문자/수령자/주소인데 운송장번호가 여러 개인 경우"):
+            st.dataframe(dup_info.head(50), use_container_width=True)
+
+    excel_bytes = export_excel(out_df)
+    st.download_button(
+        "✅ 3번(발송처리) 엑셀 다운로드",
+        data=excel_bytes,
+        file_name="3_발송처리_자동채움.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
