@@ -296,6 +296,6 @@ if run:
     st.download_button(
         "✅ 3번(발송처리) 엑셀 다운로드",
         data=xls_bytes,
-        file_name="3_발송처리_자동채움.xls",
+        file_name="송장일괄발송.xls",
         mime="application/vnd.ms-excel",
     )
