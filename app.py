@@ -142,7 +142,7 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
     # 3번 템플릿 형태로 출력
     out = pd.DataFrame({
         "상품주문번호": df1["_상품주문번호_plain"],
-        "배송방법": ["택배,등기,소포"] * len(df1),
+        "배송방법": ["택배"] * len(df1),
         "택배사": df1["_송장번호_plain"].apply(lambda x: "컬리넥스트마일" if "-" in str(x) else ("롯데택배" if str(x).strip() else "")),
         "송장번호": df1["_송장번호_plain"],
     })
@@ -165,8 +165,8 @@ def export_excel(out_df: pd.DataFrame) -> bytes:
 
         # A/D열(상품주문번호/송장번호) 텍스트로 고정 → 과학표기(3.1E+11) 방지
     for r in range(2, len(out_df) + 2):
-        ws[f"A{r}"].number_format = "@"
-        ws[f"D{r}"].number_format = "@"
+        ws[f"A{r}"].number_format = "General"
+        ws[f"D{r}"].number_format = "General"
 
 # B열(배송방법) 드롭다운 고정: 택배,등기,소포
     dv = DataValidation(type="list", formula1='"택배,등기,소포"', allow_blank=True)
