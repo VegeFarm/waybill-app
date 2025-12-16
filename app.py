@@ -152,7 +152,7 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
 
     out = pd.DataFrame({
         "상품주문번호": df1["_상품주문번호_plain"],
-        "배송방법": ["택배,등기,소포"] * len(df1),  # 기본값
+        "배송방법": ["택배"] * len(df1),  # ✅ (xls는 드롭다운 제약) 기본값은 택배로
         "택배사": df1["_송장번호_plain"].apply(
             lambda x: "컬리넥스트마일" if "-" in str(x) else ("롯데택배" if str(x).strip() else "")
         ),
@@ -164,7 +164,6 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
 def export_xls(out_df: pd.DataFrame) -> bytes:
     """
     .xls 생성 (xlwt)
-    - .xls는 드롭다운(DataValidation) 강제 적용이 제한적이라 B열은 값만 '택배'로 채움
     - A/D는 문자열로 써서 과학표기 방지
     """
     import xlwt
@@ -190,11 +189,8 @@ def export_xls(out_df: pd.DataFrame) -> bytes:
         vals = list(row)
         for c, v in enumerate(vals):
             v_str = "" if v is None else str(v)
-
-            # A(상품주문번호), D(송장번호) → 문자열로 써서 E+11 방지
-            if c in (0, 3):
+            if c in (0, 3):  # A(상품주문번호), D(송장번호)
                 ws.write(r, c, v_str, left_style)
-            # B,C는 가운데 정렬
             else:
                 ws.write(r, c, v_str, center_style)
 
@@ -280,8 +276,9 @@ if run:
 
     out_df, dup_info = build_output(df1, df2)
 
-    st.subheader("미리보기")
-    st.dataframe(out_df.head(30), use_container_width=True)
+    # ✅ 미리보기 접기/펴기
+    with st.expander("미리보기 (상위 30건) — 클릭해서 접기/펼치기", expanded=True):
+        st.dataframe(out_df.head(30), use_container_width=True)
 
     miss = (out_df["송장번호"].isna() | (out_df["송장번호"].astype(str).str.strip() == "")).sum()
     st.write(f"총 {len(out_df)}건 / 송장번호 누락 {miss}건")
