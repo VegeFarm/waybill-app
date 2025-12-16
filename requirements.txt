@@ -2,4 +2,5 @@ streamlit
 pandas
 openpyxl
 msoffcrypto-tool
-xlrd==2.0.1
+xlrd
+
