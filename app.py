@@ -200,7 +200,7 @@ def export_xls(out_df: pd.DataFrame) -> bytes:
 
 
 # ---------------- UI ----------------
-st.set_page_config(page_title="송장일괄발송", layout="wide")
+st.set_page_config(page_title="📦 송장일괄발송", layout="wide")
 st.title("📦 송장일괄발송")
 
 st.markdown("- 1번 파일은 **비밀번호 0000 고정**으로 열어서 처리합니다.")
