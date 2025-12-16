@@ -5,6 +5,15 @@ from typing import Optional, Tuple, Dict
 
 import pandas as pd
 import streamlit as st
+from PIL import Image
+
+icon = Image.open("favicon.png")  # repo 루트에 있는 파일
+
+st.set_page_config(
+    page_title="송장일괄발송",
+    page_icon=icon,
+    layout="wide",
+)
 
 # -------------------------
 # 고정 비밀번호 (요청사항)
