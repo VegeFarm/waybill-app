@@ -277,7 +277,7 @@ if run:
     out_df, dup_info = build_output(df1, df2)
 
     # ✅ 미리보기 접기/펴기
-    with st.expander("미리보기 (상위 30건) — 클릭해서 접기/펼치기", expanded=True):
+    with st.expander("미리보기 (상위 30건) — 클릭해서 접기/펼치기", expanded=False):
         st.dataframe(out_df.head(30), use_container_width=True)
 
     miss = (out_df["송장번호"].isna() | (out_df["송장번호"].astype(str).str.strip() == "")).sum()
