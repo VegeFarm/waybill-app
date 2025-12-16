@@ -152,7 +152,7 @@ def build_output(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd
 
     out = pd.DataFrame({
         "상품주문번호": df1["_상품주문번호_plain"],
-        "배송방법": ["택배"] * len(df1),  # ✅ (xls는 드롭다운 제약) 기본값은 택배로
+        "배송방법": ["택배,등기,소포"] * len(df1),  # ✅ (xls는 드롭다운 제약) 기본값은 택배,등기,소포로
         "택배사": df1["_송장번호_plain"].apply(
             lambda x: "컬리넥스트마일" if "-" in str(x) else ("롯데택배" if str(x).strip() else "")
         ),
