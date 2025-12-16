@@ -7,10 +7,11 @@ import pandas as pd
 import streamlit as st
 
 # Excel IO
-# - openpyxl is required by pandas to read .xlsx files
-# - xlrd reads .xls templates
-# - xlwt writes .xls output
-import xlwt
+import openpyxl
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.styles import Font, Alignment
+
 # Encrypted xlsx support
 import msoffcrypto
 
@@ -274,43 +275,51 @@ def build_output(orders_df: pd.DataFrame, ship_df: pd.DataFrame, template_df: pd
     return merged
 
 
-def df_to_xls_bytes(df: pd.DataFrame, sheet_name: str = "발송처리") -> bytes:
-    """Write DataFrame to legacy .xls and return bytes.
+def df_to_workbook(df: pd.DataFrame, delivery_col_name: str, order_col_name: str, track_col_name: str) -> openpyxl.Workbook:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "발송처리"
 
-    NOTE: .xls has limitations (max rows 65,536). If exceeded, raise a clear error.
-    """
-    if len(df) > 65535:
-        raise ValueError(f".xls 형식은 최대 65,536행까지 지원해요. 현재 행 수: {len(df)}")
-
-    wb = xlwt.Workbook()
-    ws = wb.add_sheet(sheet_name[:31])
-
-    header_style = xlwt.easyxf("font: bold on; align: vert centre;")
-    # default style = 'General' in Excel (no explicit number format)
-    default_style = xlwt.easyxf("align: vert centre;")
+    header_font = Font(bold=True)
+    center = Alignment(vertical="center")
 
     # Write header
-    for j, col in enumerate(df.columns):
-        ws.write(0, j, str(col), header_style)
+    ws.append(list(df.columns))
+    for j in range(1, len(df.columns) + 1):
+        cell = ws.cell(row=1, column=j)
+        cell.font = header_font
+        cell.alignment = center
 
     # Write rows
-    for i, row in enumerate(df.itertuples(index=False, name=None), start=1):
-        for j, v in enumerate(row):
-            if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
-                ws.write(i, j, "", default_style)
-            else:
-                # Keep as string to prevent scientific notation / precision loss
-                ws.write(i, j, str(v), default_style)
+    for row in df.itertuples(index=False, name=None):
+        ws.append(list(row))
 
-    # Auto width (rough)
-    for j, col in enumerate(df.columns):
-        sample = df.iloc[:200, j].astype(str).fillna("").tolist()
-        max_len = max([len(str(col))] + [len(x) for x in sample])
-        ws.col(j).width = int(min(max(10, max_len + 2), 40) * 256)
+    # Auto width
+    for j, col in enumerate(df.columns, start=1):
+        max_len = max([len(str(col))] + [len(str(v)) if v is not None else 0 for v in df[col].tolist()[:200]])
+        ws.column_dimensions[get_column_letter(j)].width = min(max(10, max_len + 2), 40)
 
-    bio = io.BytesIO()
-    wb.save(bio)
-    return bio.getvalue()
+    # Force number formats to "General" but keep values as strings (prevents scientific notation)
+    col_to_idx = {c: i+1 for i, c in enumerate(df.columns)}
+    for c_name in [order_col_name, track_col_name]:
+        if c_name and c_name in col_to_idx:
+            idx = col_to_idx[c_name]
+            for r in range(2, ws.max_row + 1):
+                ws.cell(row=r, column=idx).number_format = "General"
+
+    # Add dropdown validation for delivery method column
+    if delivery_col_name and delivery_col_name in col_to_idx:
+        idx = col_to_idx[delivery_col_name]
+        dv = DataValidation(
+            type="list",
+            formula1='"{}"'.format(",".join(DELIVERY_METHODS)),
+            allow_blank=True,
+            showDropDown=True
+        )
+        ws.add_data_validation(dv)
+        dv.add(f"{get_column_letter(idx)}2:{get_column_letter(idx)}{ws.max_row}")
+
+    return wb
 
 
 # -----------------------------
@@ -390,8 +399,12 @@ if run:
         order_col = find_col(out_df, ["상품주문번호", "주문번호"]) or "상품주문번호"
         track_col = find_col(out_df, ["송장번호", "운송장번호", "운송장", "송장"]) or "송장번호"
 
-        xls_bytes = df_to_xls_bytes(out_df)
-# Result header: a bit larger than the ones above
+        wb = df_to_workbook(out_df, delivery_col, order_col, track_col)
+        bio = io.BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+
+        # Result header: a bit larger than the ones above
         st.markdown(
             "<div style='font-size:24px; font-weight:800; margin-top:8px;'>3번 결과</div>",
             unsafe_allow_html=True
@@ -401,9 +414,9 @@ if run:
 
         st.download_button(
             "⬇️ 3번 결과 엑셀 다운로드",
-            data=xls_bytes,
-            file_name="엑셀일괄발송.xls",
-            mime="application/vnd.ms-excel",
+            data=bio.getvalue(),
+            file_name="3_발송처리_자동채움.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
 
