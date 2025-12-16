@@ -4,4 +4,4 @@ msoffcrypto-tool
 xlrd
 xlwt
 openpyxl
-
+pillow
