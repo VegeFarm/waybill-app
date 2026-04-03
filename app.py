@@ -326,8 +326,66 @@ st.markdown("- 3번 결과는 **xls**로 다운로드됩니다.")
 st.markdown(
     """
 <style>
-.upload-title { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
-.result-title { font-size: 22px; font-weight: 800; margin-top: 8px; }
+.upload-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+.result-title {
+    font-size: 22px;
+    font-weight: 800;
+    margin-top: 8px;
+}
+
+/* 업로드 박스를 2번째 이미지처럼 넓은 드래그앤드롭 영역으로 보이게 조정 */
+[data-testid="stFileUploader"] {
+    width: 100%;
+}
+[data-testid="stFileUploader"] > div {
+    width: 100%;
+}
+[data-testid="stFileUploaderDropzone"] {
+    background: #f3f4f6;
+    border: 1px solid #d7dbe2;
+    border-radius: 14px;
+    padding: 14px 16px;
+    min-height: 82px;
+}
+[data-testid="stFileUploaderDropzone"] > div {
+    width: 100%;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] {
+    text-align: left;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] > div {
+    justify-content: flex-start;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] small {
+    color: #6b7280;
+}
+[data-testid="stFileUploaderDropzone"] button {
+    border-radius: 12px;
+    border: 1px solid #d1d5db;
+    background: white;
+    font-weight: 600;
+    padding: 0.45rem 1rem;
+}
+
+/* 넓은 화면에서는 아이콘/문구/버튼이 한 줄 느낌으로 보이게 보정 */
+@media (min-width: 768px) {
+    [data-testid="stFileUploaderDropzone"] > div > div {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        gap: 14px;
+    }
+    [data-testid="stFileUploaderDropzoneInstructions"] {
+        flex: 1;
+    }
+    [data-testid="stFileUploaderDropzone"] button {
+        margin-left: auto;
+    }
+}
 </style>
 """,
     unsafe_allow_html=True,
