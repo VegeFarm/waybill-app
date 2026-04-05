@@ -402,8 +402,6 @@ if run:
         st.dataframe(out_df.head(30), use_container_width=True)
 
     miss = (out_df["송장번호"].isna() | (out_df["송장번호"].astype(str).str.strip() == "")).sum()
-    st.write(f"스마트스토어 헤더 감지 행: {smartstore_header_idx + 1}행")
-    st.write(f"운송장 파일 헤더 감지 행: {tracking_header_idx + 1}행")
     st.write(f"총 {len(out_df)}건 / 송장번호 누락 {miss}건")
 
     if not dup_info.empty:
